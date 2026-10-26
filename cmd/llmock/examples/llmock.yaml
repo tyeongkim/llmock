@@ -26,6 +26,7 @@ responses:
     delay: 500ms
     usage: {prompt_tokens: 10, completion_tokens: 20} # total defaults to sum
     stream: {chunk_size: 2, chunk_delay: 0s}
-    # abort_after_chunks: 3 # counts SSE data events including initial role; disconnects non-stream requests
+    # Counts SSE data events including the initial role; non-stream disconnects.
+    # abort_after_chunks: 3
   - file: hello.txt
     tool_call: weather_call.json

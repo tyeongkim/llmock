@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/tyeongkim/llmock/internal/config"
 )
 
 func TestExitCodes(t *testing.T) {
@@ -38,5 +40,53 @@ func TestExitCodes(t *testing.T) {
 				t.Fatalf("run(%q) = %d, want %d", tc.args, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestEmbeddedExampleIsValid(t *testing.T) {
+	dir := t.TempDir()
+	entries, err := exampleFiles.ReadDir("examples")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		data, err := exampleFiles.ReadFile("examples/" + entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, entry.Name()), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := config.Load(filepath.Join(dir, "llmock.yaml")); err != nil {
+		t.Fatalf("embedded example is not loadable: %v", err)
+	}
+}
+
+func TestHelpTopics(t *testing.T) {
+	for _, topic := range []string{"config", "routes", "record", "errors", "example", "version", "help"} {
+		t.Run(topic, func(t *testing.T) {
+			output, err := os.CreateTemp(t.TempDir(), "help")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer output.Close()
+			stdout := os.Stdout
+			os.Stdout = output
+			defer func() { os.Stdout = stdout }()
+			if code := run([]string{"help", topic}); code != 0 {
+				t.Fatalf("help %s exited %d", topic, code)
+			}
+			info, err := output.Stat()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Size() == 0 {
+				t.Fatalf("help %s produced no output", topic)
+			}
+		})
+	}
+	if code := run([]string{"help", "unknown-topic"}); code != 2 {
+		t.Fatalf("unknown help topic exited %d, want 2", code)
 	}
 }

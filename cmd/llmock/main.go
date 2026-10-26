@@ -25,87 +25,6 @@ var (
 	Date    = "unknown"
 )
 
-const rootHelp = `llmock - mock OpenAI Chat Completions server for E2E tests
-
-Usage:
-  llmock <command> [options]
-
-Commands:
-  serve      Start the mock server
-  validate   Check a config file without starting the server
-  version    Print version information
-  help       Show help for a command
-
-Run 'llmock help <command>' or 'llmock <command> --help' for details.
-`
-
-const serveHelp = `Start a mock server for POST /v1/chat/completions.
-
-Usage:
-  llmock serve -c llmock.yaml [options]
-  llmock serve response.txt   [options]
-
-With a .txt file, every request is answered with the file contents.
-With a config file, the first matching route wins; unmatched requests use responses.
-Each sequence advances independently and errors when exhausted by default.
-An exhausted matching route does not fall through to later routes or default responses.
-An unmatched request without default responses returns a mock_no_route error.
-Restart the server to reset all response sequences.
-abort_after_chunks counts SSE data events, including the initial role chunk.
-Requests with "stream": true are answered as SSE chunks.
-
-The bound port is printed as the first line of stdout; logs go to stderr.
-Use --record requests.jsonl to record completion requests (the file is truncated at startup).
-Each JSONL line is fully written before the response is sent to the client.
-
-Endpoints:
-  POST /v1/chat/completions   mock completion
-  GET  /v1/models             configured model list
-  GET  /health                readiness probe (200)
-
-Options:
-`
-
-const validateHelp = `Check a config file and the files it references, without starting the server.
-
-Usage:
-  llmock validate -c llmock.yaml
-
-Options:
-`
-
-const exampleConfig = `
-Example llmock.yaml:
-  port: 0                     # 0 picks a free port
-  models: [llmock]            # GET /v1/models
-  mode: sequence              # sequence | fixed
-  on_exhausted: error  # error | repeat_last | loop
-  stream:
-    chunk_size: 5
-    chunk_delay: 20ms
-  routes:
-    - name: title
-      on_exhausted: error      # defaults to top-level on_exhausted
-      match:
-        system_contains: Generate a title
-        # model: gpt-4o
-        # last_user_contains: hello
-        # has_tools: true
-      responses:
-        - file: answer.txt
-  responses:
-    - file: hello.txt
-    - status: 429
-      headers: {Retry-After: "2"}
-    - file: answer.txt
-      delay: 500ms
-      usage: {prompt_tokens: 10, completion_tokens: 20} # total defaults to sum
-      stream: {chunk_size: 2, chunk_delay: 0s} # override global settings
-      # abort_after_chunks: 3 # counts initial role event; disconnects non-stream requests
-    - file: hello.txt         # text and tool_call may be combined
-      tool_call: weather_call.json
-`
-
 var commands = map[string]func(args []string) error{
 	"serve":    serve,
 	"validate": validate,
@@ -162,6 +81,14 @@ func help(args []string) int {
 		fmt.Print(rootHelp)
 		return 0
 	}
+	if text, ok := helpTopics[args[0]]; ok {
+		fmt.Print(text)
+		return 0
+	}
+	if args[0] == "example" {
+		printExample()
+		return 0
+	}
 	cmd, ok := commands[args[0]]
 	if !ok {
 		fmt.Fprintf(os.Stderr, "llmock: unknown command %q\n\n%s", args[0], rootHelp)
@@ -179,16 +106,16 @@ func newFlagSet(name string) (*flag.FlagSet, *string) {
 	flags.Usage = func() {}
 
 	var configPath string
-	flags.StringVar(&configPath, "c", "", "path to llmock.yaml")
+	flags.StringVar(&configPath, "c", "", "path to YAML config (default: none)")
 	flags.StringVar(&configPath, "config", "", "path to llmock.yaml (same as -c)")
 	return flags, &configPath
 }
 
 func serve(args []string) error {
 	flags, configPath := newFlagSet("serve")
-	host := flags.String("host", "", "listen host, overrides config (default 127.0.0.1)")
-	recordPath := flags.String("record", "", "write completion requests to a JSONL file (create/truncate)")
-	port := flags.Int("port", 0, "listen port, 0 picks a free port; overrides config")
+	host := flags.String("host", "", "listen host (default: config host or 127.0.0.1)")
+	recordPath := flags.String("record", "", "JSONL output path (default: disabled; create/truncate)")
+	port := flags.Int("port", 0, "listen port (default: config port or 0); 0 picks a free port")
 	positional, err := parseInterspersed(flags, serveHelp, args)
 	if err != nil {
 		return err
@@ -264,7 +191,9 @@ func printHelp(flags *flag.FlagSet, help string) {
 	flags.SetOutput(os.Stdout)
 	flags.PrintDefaults()
 	flags.SetOutput(io.Discard)
-	fmt.Print(exampleConfig)
+	if flags.Name() == "serve" {
+		fmt.Print("\nSee also: llmock help config | routes | record\n")
+	}
 }
 
 func parseInterspersed(flags *flag.FlagSet, help string, args []string) ([]string, error) {
