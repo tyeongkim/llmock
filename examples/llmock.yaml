@@ -1,14 +1,31 @@
 port: 0
+models: [llmock]
 mode: sequence
-on_exhausted: repeat_last
+on_exhausted: error  # error | repeat_last | loop
 
 stream:
   chunk_size: 5
   chunk_delay: 20ms
 
+routes:
+  - name: title
+    on_exhausted: error        # defaults to top-level on_exhausted
+    match:
+      system_contains: Generate a title
+      # model: gpt-4o
+      # last_user_contains: hello
+      # has_tools: true
+    responses:
+      - file: answer.txt
+
 responses:
   - file: hello.txt
   - status: 429
+    headers: {Retry-After: "2"}
   - file: answer.txt
     delay: 500ms
-  - tool_call: weather_call.json
+    usage: {prompt_tokens: 10, completion_tokens: 20} # total defaults to sum
+    stream: {chunk_size: 2, chunk_delay: 0s}
+    # abort_after_chunks: 3 # counts SSE data events including initial role; disconnects non-stream requests
+  - file: hello.txt
+    tool_call: weather_call.json

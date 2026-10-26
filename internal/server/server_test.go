@@ -16,16 +16,8 @@ import (
 
 func newClient(t *testing.T, cfg config.Config) (openai.Client, string) {
 	t.Helper()
-	if cfg.Mode == "" {
-		cfg.Mode = config.ModeSequence
-	}
-	if cfg.OnExhausted == "" {
-		cfg.OnExhausted = config.OnExhaustedRepeatLast
-	}
-	if cfg.Stream.ChunkSize == 0 {
-		cfg.Stream.ChunkSize = 3
-	}
-	ts := httptest.NewServer(server.New(cfg).Handler())
+	cfg = config.WithDefaults(cfg)
+	ts := httptest.NewServer(server.New(cfg, nil).Handler())
 	t.Cleanup(ts.Close)
 
 	client := openai.NewClient(
@@ -70,7 +62,7 @@ func accumulateStream(t *testing.T, client openai.Client) openai.ChatCompletionA
 }
 
 func TestSequenceReturnsResponsesInOrderThenRepeatsLast(t *testing.T) {
-	client, _ := newClient(t, config.Config{Responses: []config.Response{
+	client, _ := newClient(t, config.Config{OnExhausted: config.OnExhaustedRepeatLast, Responses: []config.Response{
 		{Content: "first"},
 		{Status: http.StatusTooManyRequests},
 		{Content: "third"},
@@ -90,21 +82,6 @@ func TestSequenceReturnsResponsesInOrderThenRepeatsLast(t *testing.T) {
 		if got := complete(t, client); got != "third" {
 			t.Fatalf("request %d content = %q", i, got)
 		}
-	}
-}
-
-func TestResetRestartsSequence(t *testing.T) {
-	client, baseURL := newClient(t, config.Config{Responses: []config.Response{{Content: "a"}, {Content: "b"}}})
-	complete(t, client)
-
-	resp, err := http.Post(baseURL+"/__admin/reset", "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-
-	if got := complete(t, client); got != "a" {
-		t.Fatalf("after reset content = %q", got)
 	}
 }
 
@@ -141,7 +118,7 @@ func TestToolCallStreamAndNonStream(t *testing.T) {
 	arguments := `{"city":"Seoul"}`
 	client, _ := newClient(t, config.Config{
 		Mode:      config.ModeFixed,
-		Responses: []config.Response{{ToolCalls: []config.ToolCall{{Name: "get_weather", Arguments: arguments}}}},
+		Responses: []config.Response{{Content: "Checking weather", ToolCalls: []config.ToolCall{{Name: "get_weather", Arguments: arguments}}}},
 	})
 
 	completion, err := client.Chat.Completions.New(context.Background(), chatParams)
@@ -149,7 +126,7 @@ func TestToolCallStreamAndNonStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	choice := completion.Choices[0]
-	if choice.FinishReason != "tool_calls" || len(choice.Message.ToolCalls) != 1 {
+	if choice.Message.Content != "Checking weather" || choice.FinishReason != "tool_calls" || len(choice.Message.ToolCalls) != 1 {
 		t.Fatalf("non-stream choice = %+v", choice)
 	}
 	if call := choice.Message.ToolCalls[0]; call.Function.Name != "get_weather" || call.Function.Arguments != arguments || call.ID == "" {
@@ -158,7 +135,7 @@ func TestToolCallStreamAndNonStream(t *testing.T) {
 
 	acc := accumulateStream(t, client)
 	streamed := acc.Choices[0]
-	if streamed.FinishReason != "tool_calls" || len(streamed.Message.ToolCalls) != 1 {
+	if streamed.Message.Content != "Checking weather" || streamed.FinishReason != "tool_calls" || len(streamed.Message.ToolCalls) != 1 {
 		t.Fatalf("stream choice = %+v", streamed)
 	}
 	if call := streamed.Message.ToolCalls[0]; call.Function.Name != "get_weather" || call.Function.Arguments != arguments {

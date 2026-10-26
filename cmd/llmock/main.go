@@ -46,15 +46,22 @@ Usage:
   llmock serve response.txt   [options]
 
 With a .txt file, every request is answered with the file contents.
-With a config file, responses are served in the order listed in it.
+With a config file, the first matching route wins; unmatched requests use responses.
+Each sequence advances independently and errors when exhausted by default.
+An exhausted matching route does not fall through to later routes or default responses.
+An unmatched request without default responses returns a mock_no_route error.
+Restart the server to reset all response sequences.
+abort_after_chunks counts SSE data events, including the initial role chunk.
 Requests with "stream": true are answered as SSE chunks.
 
 The bound port is printed as the first line of stdout; logs go to stderr.
+Use --record requests.jsonl to record completion requests (the file is truncated at startup).
+Each JSONL line is fully written before the response is sent to the client.
 
 Endpoints:
   POST /v1/chat/completions   mock completion
+  GET  /v1/models             configured model list
   GET  /health                readiness probe (200)
-  POST /__admin/reset         restart the response sequence
 
 Options:
 `
@@ -70,17 +77,33 @@ Options:
 const exampleConfig = `
 Example llmock.yaml:
   port: 0                     # 0 picks a free port
+  models: [llmock]            # GET /v1/models
   mode: sequence              # sequence | fixed
-  on_exhausted: repeat_last   # repeat_last | loop | error
+  on_exhausted: error  # error | repeat_last | loop
   stream:
     chunk_size: 5
     chunk_delay: 20ms
+  routes:
+    - name: title
+      on_exhausted: error      # defaults to top-level on_exhausted
+      match:
+        system_contains: Generate a title
+        # model: gpt-4o
+        # last_user_contains: hello
+        # has_tools: true
+      responses:
+        - file: answer.txt
   responses:
     - file: hello.txt
     - status: 429
+      headers: {Retry-After: "2"}
     - file: answer.txt
       delay: 500ms
-    - tool_call: weather.json
+      usage: {prompt_tokens: 10, completion_tokens: 20} # total defaults to sum
+      stream: {chunk_size: 2, chunk_delay: 0s} # override global settings
+      # abort_after_chunks: 3 # counts initial role event; disconnects non-stream requests
+    - file: hello.txt         # text and tool_call may be combined
+      tool_call: weather_call.json
 `
 
 var commands = map[string]func(args []string) error{
@@ -164,6 +187,7 @@ func newFlagSet(name string) (*flag.FlagSet, *string) {
 func serve(args []string) error {
 	flags, configPath := newFlagSet("serve")
 	host := flags.String("host", "", "listen host, overrides config (default 127.0.0.1)")
+	recordPath := flags.String("record", "", "write completion requests to a JSONL file (create/truncate)")
 	port := flags.Int("port", 0, "listen port, 0 picks a free port; overrides config")
 	positional, err := parseInterspersed(flags, serveHelp, args)
 	if err != nil {
@@ -183,27 +207,40 @@ func serve(args []string) error {
 		}
 	})
 
+	var recorder io.Writer
+	if *recordPath != "" {
+		file, err := os.Create(*recordPath)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		recorder = file
+	}
+
 	listener, err := net.Listen("tcp", net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)))
 	if err != nil {
 		return err
 	}
 	fmt.Println(listener.Addr().(*net.TCPAddr).Port)
-	log.Printf("listening on http://%s/v1 with %d response(s)", listener.Addr(), len(cfg.Responses))
+	log.Printf("listening on http://%s/v1 with %d default response(s), %d route(s)", listener.Addr(), len(cfg.Responses), len(cfg.Routes))
 
-	httpServer := &http.Server{Handler: server.New(cfg).Handler(), ReadHeaderTimeout: 10 * time.Second}
+	httpServer := &http.Server{Handler: server.New(cfg, recorder).Handler(), ReadHeaderTimeout: 10 * time.Second}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	shutdownDone := make(chan struct{})
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		httpServer.Shutdown(shutdownCtx)
+		close(shutdownDone)
 	}()
 
 	if err := httpServer.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	<-shutdownDone
 	return nil
 }
 
@@ -218,7 +255,7 @@ func validate(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("ok: %d response(s)\n", len(cfg.Responses))
+	fmt.Printf("ok: %d default response(s), %d route(s)\n", len(cfg.Responses), len(cfg.Routes))
 	return nil
 }
 

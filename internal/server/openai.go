@@ -87,12 +87,23 @@ func countUsage(response config.Response) usage {
 	for _, call := range response.ToolCalls {
 		completionTokens += len([]rune(call.Arguments))
 	}
-	return usage{CompletionTokens: completionTokens, TotalTokens: completionTokens}
+	result := usage{CompletionTokens: completionTokens}
+	if response.Usage.PromptTokens != nil {
+		result.PromptTokens = *response.Usage.PromptTokens
+	}
+	if response.Usage.CompletionTokens != nil {
+		result.CompletionTokens = *response.Usage.CompletionTokens
+	}
+	result.TotalTokens = result.PromptTokens + result.CompletionTokens
+	if response.Usage.TotalTokens != nil {
+		result.TotalTokens = *response.Usage.TotalTokens
+	}
+	return result
 }
 
 func buildCompletion(completionID, model string, response config.Response) completion {
 	reply := message{Role: "assistant"}
-	if len(response.ToolCalls) == 0 {
+	if response.Content != "" || len(response.ToolCalls) == 0 {
 		reply.Content = &response.Content
 	}
 	for i, call := range response.ToolCalls {
@@ -125,9 +136,19 @@ func (s *Server) writeStream(w http.ResponseWriter, r *http.Request, completionI
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
+	stream := s.cfg.Stream
+	if response.Stream != nil {
+		if response.Stream.ChunkSize != nil {
+			stream.ChunkSize = *response.Stream.ChunkSize
+		}
+		if response.Stream.ChunkDelay != nil {
+			stream.ChunkDelay = *response.Stream.ChunkDelay
+		}
+	}
+	events := 0
 	first := true
 	send := func(choices []chunkChoice, chunkUsage *usage) bool {
-		if !first && !sleep(r, s.cfg.Stream.ChunkDelay) {
+		if !first && !sleep(r, stream.ChunkDelay) {
 			return false
 		}
 		first = false
@@ -148,6 +169,11 @@ func (s *Server) writeStream(w http.ResponseWriter, r *http.Request, completionI
 			return false
 		}
 		flusher.Flush()
+		events++
+		if response.AbortAfterChunks > 0 && events >= response.AbortAfterChunks {
+			log.Printf("abort completion %s after %d chunks", completionID, events)
+			panic(http.ErrAbortHandler)
+		}
 		return true
 	}
 	sendDelta := func(d delta) bool {
@@ -159,12 +185,10 @@ func (s *Server) writeStream(w http.ResponseWriter, r *http.Request, completionI
 		return
 	}
 
-	chunkSize := s.cfg.Stream.ChunkSize
-	if len(response.ToolCalls) == 0 {
-		for _, piece := range splitRunes(response.Content, chunkSize) {
-			if !sendDelta(delta{Content: &piece}) {
-				return
-			}
+	chunkSize := stream.ChunkSize
+	for _, piece := range splitRunes(response.Content, chunkSize) {
+		if !sendDelta(delta{Content: &piece}) {
+			return
 		}
 	}
 
@@ -202,6 +226,10 @@ func (s *Server) writeStream(w http.ResponseWriter, r *http.Request, completionI
 		return
 	}
 	flusher.Flush()
+	if response.AbortAfterChunks > 0 {
+		log.Printf("warning: completion %s finished after %d SSE data events without reaching abort_after_chunks=%d", completionID, events, response.AbortAfterChunks)
+	}
+	return
 }
 
 func splitRunes(text string, size int) []string {

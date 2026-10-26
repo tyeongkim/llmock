@@ -30,6 +30,7 @@ func TestExitCodes(t *testing.T) {
 		{"config and txt together", []string{"validate", "-c", reply, reply}, 2},
 		{"missing file", []string{"validate", filepath.Join(dir, "absent.txt")}, 1},
 		{"valid txt", []string{"validate", reply}, 0},
+		{"record open failure", []string{"serve", "--record", filepath.Join(dir, "missing", "requests.jsonl"), reply}, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
