@@ -1,0 +1,14 @@
+port: 0
+mode: sequence
+on_exhausted: repeat_last
+
+stream:
+  chunk_size: 5
+  chunk_delay: 20ms
+
+responses:
+  - file: hello.txt
+  - status: 429
+  - file: answer.txt
+    delay: 500ms
+  - tool_call: weather_call.json

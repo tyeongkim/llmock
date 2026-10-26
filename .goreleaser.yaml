@@ -1,0 +1,110 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: llmock
+    main: ./cmd/llmock
+    binary: llmock
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.Commit={{.Commit}}
+      - -X main.Date={{.Date}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - name_template: >-
+      {{- .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^test:"
+      - "^chore:"
+      - "^docs:"
+      - "^ci:"
+      - "^build:"
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 100
+    - title: Bug fixes
+      regexp: '^.*?(fix|refactor)(\(.+\))??!?:.+$'
+      order: 200
+    - title: Others
+      order: 9999
+
+release:
+  name_template: "v{{ .Version }}"
+  prerelease: auto
+  footer: |
+    **Full Changelog**: https://github.com/tyeongkim/llmock/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+homebrew_casks:
+  # Stable cask: updated only on full releases. Skipped for prereleases (e.g. -beta).
+  - name: llmock
+    skip_upload: auto
+    repository:
+      owner: tyeongkim
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    url:
+      template: "https://github.com/tyeongkim/llmock/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+    homepage: https://github.com/tyeongkim/llmock
+    description: Mock OpenAI Chat Completions server for E2E tests
+    binaries:
+      - llmock
+    hooks:
+      post:
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/llmock"]
+          end
+    commit_msg_template: "Update {{ .ProjectName }} to {{ .Tag }}"
+
+  # Beta cask: updated only on prereleases. Installed via `brew install tyeongkim/tap/llmock@beta`.
+  - name: llmock@beta
+    skip_upload: '{{ if .Prerelease }}false{{ else }}true{{ end }}'
+    repository:
+      owner: tyeongkim
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    url:
+      template: "https://github.com/tyeongkim/llmock/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+    homepage: https://github.com/tyeongkim/llmock
+    description: Mock OpenAI Chat Completions server for E2E tests (beta channel)
+    binaries:
+      - llmock
+    hooks:
+      post:
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/llmock"]
+          end
+    commit_msg_template: "Update {{ .ProjectName }} (beta) to {{ .Tag }}"
